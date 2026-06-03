@@ -147,6 +147,68 @@
     }
   }
 
+  function normalizeSelectedObjects(result) {
+    if (Array.isArray(result)) {
+      return result;
+    }
+
+    if (!result) {
+      return [];
+    }
+
+    if (Array.isArray(result.selectedObjects)) {
+      return result.selectedObjects;
+    }
+
+    if (Array.isArray(result.objects)) {
+      return result.objects;
+    }
+
+    if (Array.isArray(result.items)) {
+      return result.items;
+    }
+
+    return [];
+  }
+
+  function loadSelectedDrawings(callback) {
+    window.Asc.plugin.callCommand(function () {
+      var result = [];
+      var presentation = Api.GetPresentation();
+      if (!presentation) {
+        return result;
+      }
+
+      var slide = presentation.GetCurrentSlide();
+      if (!slide) {
+        return result;
+      }
+
+      var drawings = slide.GetAllDrawings();
+      var i;
+      for (i = 0; i < drawings.length; i++) {
+        var drawing = drawings[i];
+        var isSelected = drawing.IsSelected && drawing.IsSelected();
+        if (!isSelected) {
+          continue;
+        }
+
+        result.push({
+          X: drawing.GetPosX ? drawing.GetPosX() : 0,
+          Y: drawing.GetPosY ? drawing.GetPosY() : 0,
+          Width: drawing.GetWidth ? drawing.GetWidth() : 0,
+          Height: drawing.GetHeight ? drawing.GetHeight() : 0,
+          Rot: drawing.GetRotation ? drawing.GetRotation() : 0,
+          Name: drawing.GetName ? drawing.GetName() : ""
+        });
+      }
+
+      return result;
+    }, false, false, function (objects) {
+      callback(Array.isArray(objects) ? objects : []);
+    });
+  }
+
   // ─── Apply size / position / rotation ──────────────────────────────────────
 
   /**
@@ -254,11 +316,20 @@
   window.Asc.plugin.init = function () {
     updateUiFromSelection([]);
 
-    if (window.Asc.plugin.attachEvent) {
+    if (window.Asc.plugin.attachEditorEvent) {
+      window.Asc.plugin.attachEditorEvent("onSelectionChanged", refreshSelection);
+    } else if (window.Asc.plugin.attachEvent) {
       window.Asc.plugin.attachEvent("onSelectionChanged", refreshSelection);
     }
 
     window.Asc.plugin.onSelectionChanged = refreshSelection;
+
+    if (window.Asc.plugin.event_onSelectionChanged === undefined) {
+      window.Asc.plugin.event_onSelectionChanged = refreshSelection;
+    }
+
+    window.clearInterval(window.Asc.plugin._layoutSelectionTimer);
+    window.Asc.plugin._layoutSelectionTimer = window.setInterval(refreshSelection, 800);
 
     // Request the current selection immediately so the panel is populated
     // as soon as the plugin opens.
@@ -269,20 +340,36 @@
    * Fetch selected objects from the editor via executeMethod and update the UI.
    */
   function refreshSelection() {
-    window.Asc.plugin.executeMethod("GetSelectedObjects", [], function (objects) {
-      selectedObjects = objects || [];
-
-      // Capture aspect ratio of first object for lock-aspect feature
-      if (selectedObjects.length === 1) {
-        var o = selectedObjects[0] || {};
-        var w = getNumericProperty(o, ["Width", "W", "width"], 0);
-        var h = getNumericProperty(o, ["Height", "H", "height"], 1);
-        aspectRatio = h !== 0 ? w / h : null;
-      } else {
-        aspectRatio = null;
+    window.Asc.plugin.executeMethod("GetSelectionType", [], function (selectionType) {
+      if (typeof selectionType !== "string") {
+        window.Asc.plugin.executeMethod("GetSelectedObjects", [], function (objects) {
+          selectedObjects = normalizeSelectedObjects(objects);
+          updateUiFromSelection(selectedObjects);
+        });
+        return;
       }
 
-      updateUiFromSelection(selectedObjects);
+      if (selectionType !== "drawing") {
+        selectedObjects = [];
+        aspectRatio = null;
+        updateUiFromSelection(selectedObjects);
+        return;
+      }
+
+      loadSelectedDrawings(function (objects) {
+        selectedObjects = normalizeSelectedObjects(objects);
+
+        if (selectedObjects.length === 1) {
+          var o = selectedObjects[0] || {};
+          var w = getNumericProperty(o, ["Width", "W", "width"], 0);
+          var h = getNumericProperty(o, ["Height", "H", "height"], 1);
+          aspectRatio = h !== 0 ? w / h : null;
+        } else {
+          aspectRatio = null;
+        }
+
+        updateUiFromSelection(selectedObjects);
+      });
     });
   }
 
