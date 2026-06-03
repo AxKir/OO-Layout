@@ -1,0 +1,19 @@
+{
+  "name": "Layout Panel",
+  "guid": "asc.{C7A12356-8D4E-4B2F-9F3A-6E5D7C8B9A1F}",
+  "baseUrl": "",
+  "version": "1.0",
+  "minVersion": "7.0.0",
+  "variations": [
+    {
+      "description": "Layout Panel - quickly access size, position and alignment controls for the selected object without digging through menus.",
+      "url": "index.html",
+      "icons": "resources/img/icon.png",
+      "EditorsSupport": ["slide"],
+      "isViewer": false,
+      "initDataType": "none",
+      "initOnSelectionChanged": true,
+      "type": "panelRight"
+    }
+  ]
+}
