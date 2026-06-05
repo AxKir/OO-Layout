@@ -31,6 +31,7 @@
   /** Prevent overlapping refresh calls that can lag/freeze the panel */
   var refreshInFlight = false;
   var refreshQueued = false;
+  var refreshTimer = null;
 
   // ─── DOM references ────────────────────────────────────────────────────────
 
@@ -47,7 +48,12 @@
   var elY               = document.getElementById("input-y");
   var elRotation        = document.getElementById("input-rotation");
   var elLockAspect      = document.getElementById("lock-aspect");
-  var elBtnApply        = document.getElementById("btn-apply");
+
+  function executeCommandAndRefresh(script) {
+    window.Asc.plugin.callCommand(new Function(script), false, false, function () { // eslint-disable-line no-new-func
+      refreshSelection();
+    });
+  }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -228,9 +234,6 @@
       elLockAspect.disabled = !isSingleSelection;
     }
 
-    if (elBtnApply) {
-      elBtnApply.disabled = !hasSelection;
-    }
   }
 
   function normalizeSelectedObjects(result) {
@@ -323,6 +326,12 @@
     });
   }
 
+  function loadSelectedObjectsViaMethod(callback) {
+    window.Asc.plugin.executeMethod("GetSelectedObjects", [], function (objects) {
+      callback(normalizeSelectedObjects(objects));
+    });
+  }
+
   function applySelection(objects) {
     selectedObjects = normalizeSelectedObjects(objects);
 
@@ -339,18 +348,38 @@
   }
 
   function fetchSelectedObjects(callback) {
-    window.Asc.plugin.executeMethod("GetSelectedObjects", [], function (objects) {
-      var selected = normalizeSelectedObjects(objects);
-
+    loadSelectedObjectsViaMethod(function (selected) {
       if (selected.length > 0 && hasUsableMetrics(selected[0])) {
         callback(selected);
         return;
       }
 
-      // Fallback for editors/builds where GetSelectedObjects does not provide
-      // drawing geometry: inspect selected drawings through DocBuilder.
+      // Get reliable geometry when method payload contains descriptors only.
       loadSelectedDrawings(function (drawings) {
-        callback(normalizeSelectedObjects(drawings));
+        var normalized = normalizeSelectedObjects(drawings);
+        if (normalized.length > 0 && hasUsableMetrics(normalized[0])) {
+          callback(normalized);
+          return;
+        }
+
+        // Keep descriptor selection if available so controls remain enabled.
+        if (selected.length > 0) {
+          callback(selected);
+          return;
+        }
+
+        // Final fallback: infer object selection by type.
+        window.Asc.plugin.executeMethod("GetSelectionType", [], function (selectionType) {
+          var type = typeof selectionType === "string" ? selectionType.toLowerCase() : "";
+          var looksLikeObjectSelection = type === "drawing"
+            || type === "shape"
+            || type === "object"
+            || type === "image"
+            || type === "chart"
+            || type === "group";
+
+          callback(looksLikeObjectSelection ? [{}] : []);
+        });
       });
     });
   }
@@ -376,7 +405,7 @@
               ? "  s.SetPosition(" + newX + "," + newY + ");"
               : "")
          + (newRot !== null
-              ? "  s.SetRotAngle(" + newRot + ");"
+              ? "  if (s.SetRotation) { s.SetRotation(" + newRot + "); }"
               : "")
          + "}";
   }
@@ -394,6 +423,23 @@
     var newY   = yRaw   !== "" ? mmToEmu(yRaw)   : null;
     var newRot = rotRaw !== "" ? parseFloat(rotRaw) : null;
 
+    // For single selection, allow changing only one dimension/coordinate by
+    // filling missing pair values from the current object geometry.
+    if (selectedObjects.length === 1) {
+      var current = getObjectMetrics(selectedObjects[0] || {});
+      if (newW !== null && newH === null && current.h !== null) {
+        newH = current.h;
+      } else if (newH !== null && newW === null && current.w !== null) {
+        newW = current.w;
+      }
+
+      if (newX !== null && newY === null && current.y !== null) {
+        newY = current.y;
+      } else if (newY !== null && newX === null && current.x !== null) {
+        newX = current.x;
+      }
+    }
+
     // Enforce aspect ratio on single-selection when lock is active
     if (selectedObjects.length === 1 && elLockAspect.checked && aspectRatio) {
       if (newW !== null && hRaw === "") {
@@ -407,7 +453,7 @@
 
     var script = buildApplyScript(newW, newH, newX, newY, newRot);
 
-    window.Asc.plugin.callCommand(new Function(script), true); // eslint-disable-line no-new-func
+    executeCommandAndRefresh(script);
   }
 
   // ─── Alignment ─────────────────────────────────────────────────────────────
@@ -427,13 +473,44 @@
   };
 
   function buildAlignScript(alignType) {
-      return "var selection = Api.GetSelection ? Api.GetSelection() : null;"
-        + "if (!selection) { return; }"
-        + "var shapes = selection.GetShapes ? selection.GetShapes() : [];"
-         + "var i, s;"
+      return "var pres = Api.GetPresentation ? Api.GetPresentation() : null;"
+         + "var selection = Api.GetSelection ? Api.GetSelection() : null;"
+        + "if (!pres || !selection) { return; }"
+         + "var shapes = selection.GetShapes ? selection.GetShapes() : [];"
+        + "if (shapes.length < 2) { return; }"
+        + "var i, s, x, y, w, h, nx, ny;"
+        + "var minX = null, minY = null, maxX = null, maxY = null;"
+        + "for (i = 0; i < shapes.length; i++) {"
+        + "  s = shapes[i];"
+        + "  x = s.GetPosX ? s.GetPosX() : null;"
+        + "  y = s.GetPosY ? s.GetPosY() : null;"
+        + "  w = s.GetWidth ? s.GetWidth() : null;"
+        + "  h = s.GetHeight ? s.GetHeight() : null;"
+        + "  if (x === null || y === null || w === null || h === null) { continue; }"
+        + "  if (minX === null || x < minX) { minX = x; }"
+        + "  if (minY === null || y < minY) { minY = y; }"
+        + "  if (maxX === null || (x + w) > maxX) { maxX = x + w; }"
+        + "  if (maxY === null || (y + h) > maxY) { maxY = y + h; }"
+        + "}"
+        + "if (minX === null || minY === null || maxX === null || maxY === null) { return; }"
+        + "var centerX = Math.round((minX + maxX) / 2);"
+        + "var centerY = Math.round((minY + maxY) / 2);"
          + "for (i = 0; i < shapes.length; i++) {"
          + "  s = shapes[i];"
-         + "  s.SetAlignObject(\"" + alignType + "\", true);" // true = relative to slide
+         + "  x = s.GetPosX ? s.GetPosX() : null;"
+         + "  y = s.GetPosY ? s.GetPosY() : null;"
+         + "  w = s.GetWidth ? s.GetWidth() : null;"
+         + "  h = s.GetHeight ? s.GetHeight() : null;"
+         + "  if (x === null || y === null) { continue; }"
+         + "  nx = x;"
+         + "  ny = y;"
+        + (alignType === "left" ? "  nx = minX;" : "")
+        + (alignType === "center" ? "  if (w !== null) { nx = Math.round(centerX - (w / 2)); }" : "")
+        + (alignType === "right" ? "  if (w !== null) { nx = maxX - w; }" : "")
+        + (alignType === "top" ? "  ny = minY;" : "")
+        + (alignType === "ctr" ? "  if (h !== null) { ny = Math.round(centerY - (h / 2)); }" : "")
+        + (alignType === "bottom" ? "  if (h !== null) { ny = maxY - h; }" : "")
+         + "  if (s.SetPosition) { s.SetPosition(nx, ny); }"
          + "}";
   }
 
@@ -442,10 +519,42 @@
     return "var selection = Api.GetSelection ? Api.GetSelection() : null;"
          + "if (!selection) { return; }"
          + "var sel = selection.GetShapes ? selection.GetShapes() : [];"
-         + "if (sel.length < 2) { return; }"
+         + "if (sel.length < 3) { return; }"
+         + "var items = [];"
+         + "var i, s, x, y, w, h;"
+         + "for (i = 0; i < sel.length; i++) {"
+         + "  s = sel[i];"
+         + "  x = s.GetPosX ? s.GetPosX() : null;"
+         + "  y = s.GetPosY ? s.GetPosY() : null;"
+         + "  w = s.GetWidth ? s.GetWidth() : null;"
+         + "  h = s.GetHeight ? s.GetHeight() : null;"
+         + "  if (x === null || y === null || w === null || h === null) { continue; }"
+         + "  items.push({ s: s, x: x, y: y, w: w, h: h });"
+         + "}"
+         + "if (items.length < 3) { return; }"
          + (direction === "h"
-             ? "sel[0].DistributeShapes(sel, true, false);"
-             : "sel[0].DistributeShapes(sel, false, true);");
+             ? "items.sort(function(a,b){ return a.x - b.x; });"
+               + "var start = items[0].x;"
+               + "var end = items[items.length - 1].x + items[items.length - 1].w;"
+               + "var total = 0;"
+               + "for (i = 0; i < items.length; i++) { total += items[i].w; }"
+               + "var gap = (end - start - total) / (items.length - 1);"
+               + "var pos = start;"
+               + "for (i = 0; i < items.length; i++) {"
+               + "  if (items[i].s.SetPosition) { items[i].s.SetPosition(Math.round(pos), items[i].y); }"
+               + "  pos += items[i].w + gap;"
+               + "}"
+             : "items.sort(function(a,b){ return a.y - b.y; });"
+               + "var start = items[0].y;"
+               + "var end = items[items.length - 1].y + items[items.length - 1].h;"
+               + "var total = 0;"
+               + "for (i = 0; i < items.length; i++) { total += items[i].h; }"
+               + "var gap = (end - start - total) / (items.length - 1);"
+               + "var pos = start;"
+               + "for (i = 0; i < items.length; i++) {"
+               + "  if (items[i].s.SetPosition) { items[i].s.SetPosition(items[i].x, Math.round(pos)); }"
+               + "  pos += items[i].h + gap;"
+               + "}");
   }
 
   // ─── OnlyOffice Plugin lifecycle ───────────────────────────────────────────
@@ -465,6 +574,10 @@
       window.Asc.plugin.event_onSelectionChanged = refreshSelection;
     }
 
+    // Fallback for builds where selection events are not always emitted.
+    window.clearInterval(window.Asc.plugin._layoutSelectionWatchdog);
+    window.Asc.plugin._layoutSelectionWatchdog = window.setInterval(refreshSelection, 700);
+
     // Request the current selection immediately so the panel is populated
     // as soon as the plugin opens.
     refreshSelection();
@@ -474,6 +587,13 @@
    * Fetch selected objects from the editor via executeMethod and update the UI.
    */
   function refreshSelection() {
+    if (refreshTimer) {
+      window.clearTimeout(refreshTimer);
+    }
+
+    refreshTimer = window.setTimeout(function () {
+      refreshTimer = null;
+
     if (refreshInFlight) {
       refreshQueued = true;
       return;
@@ -489,17 +609,14 @@
       }
     }
 
-    loadSelectedDrawings(function (drawings) {
-      var normalizedDrawings = normalizeSelectedObjects(drawings);
-      applySelection(normalizedDrawings);
+    fetchSelectedObjects(function (objects) {
+      applySelection(objects);
       finish();
     });
+    }, 80);
   }
 
   // ─── Event listeners ───────────────────────────────────────────────────────
-
-  // Apply button
-  elBtnApply.addEventListener("click", applyLayoutValues);
 
   // Allow pressing Enter in any numeric field to apply immediately
   [elWidth, elHeight, elX, elY, elRotation].forEach(function (el) {
@@ -515,7 +632,7 @@
       var alignVal = ALIGN_MAP[alignKey];
       if (alignVal) {
         var script = buildAlignScript(alignVal);
-        window.Asc.plugin.callCommand(new Function(script), true); // eslint-disable-line no-new-func
+        executeCommandAndRefresh(script);
       }
     });
   });
@@ -525,7 +642,7 @@
     btn.addEventListener("click", function () {
       var dir    = btn.getAttribute("data-distribute");
       var script = buildDistributeScript(dir);
-      window.Asc.plugin.callCommand(new Function(script), true); // eslint-disable-line no-new-func
+      executeCommandAndRefresh(script);
     });
   });
 
