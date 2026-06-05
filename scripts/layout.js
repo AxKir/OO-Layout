@@ -50,8 +50,16 @@
   var elLockAspect      = document.getElementById("lock-aspect");
 
   function executeCommandAndRefresh(script) {
-    window.Asc.plugin.callCommand(new Function(script), false, false, function () { // eslint-disable-line no-new-func
-      refreshSelection();
+    window.Asc.plugin.callCommand(new Function(script), false, true, function () { // eslint-disable-line no-new-func
+      loadSelectedDrawings(function (drawings) {
+        var normalized = normalizeSelectedObjects(drawings);
+        if (normalized.length > 0 && hasUsableMetrics(normalized[0])) {
+          applySelection(normalized);
+          return;
+        }
+
+        refreshSelection();
+      });
     });
   }
 
@@ -586,7 +594,20 @@
   /**
    * Fetch selected objects from the editor via executeMethod and update the UI.
    */
+  var inputFields = [elWidth, elHeight, elX, elY, elRotation];
+
+  function anyInputFocused() {
+    var active = document.activeElement;
+    for (var i = 0; i < inputFields.length; i++) {
+      if (inputFields[i] === active) { return true; }
+    }
+    return false;
+  }
+
   function refreshSelection() {
+    // Never overwrite values while the user is actively editing a field.
+    if (anyInputFocused()) { return; }
+
     if (refreshTimer) {
       window.clearTimeout(refreshTimer);
     }
