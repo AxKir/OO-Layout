@@ -28,6 +28,10 @@
   /** Aspect ratio of the first selected object (w/h), null when not locked */
   var aspectRatio = null;
 
+  /** Prevent overlapping refresh calls that can lag/freeze the panel */
+  var refreshInFlight = false;
+  var refreshQueued = false;
+
   // ─── DOM references ────────────────────────────────────────────────────────
 
   var elSelectionStatus = document.getElementById("selection-status");
@@ -67,6 +71,87 @@
       }
     }
     return fallback;
+  }
+
+  function getNestedNumericProperty(object, paths) {
+    var i;
+    for (i = 0; i < paths.length; i++) {
+      var path = paths[i];
+      var current = object;
+      var j;
+      for (j = 0; j < path.length; j++) {
+        if (!current || current[path[j]] === undefined || current[path[j]] === null) {
+          current = null;
+          break;
+        }
+        current = current[path[j]];
+      }
+
+      if (typeof current === "number" && !isNaN(current)) {
+        return current;
+      }
+    }
+
+    return null;
+  }
+
+  function getObjectMetrics(object) {
+    var width = getNumericProperty(object, ["Width", "W", "width", "w"], null);
+    var height = getNumericProperty(object, ["Height", "H", "height", "h"], null);
+    var x = getNumericProperty(object, ["X", "Left", "PosX", "x", "left"], null);
+    var y = getNumericProperty(object, ["Y", "Top", "PosY", "y", "top"], null);
+    var rot = getNumericProperty(object, ["Rot", "Rotation", "Angle", "rot", "rotation", "angle"], null);
+
+    if (width === null) {
+      width = getNestedNumericProperty(object, [
+        ["Size", "Width"], ["Size", "W"], ["size", "width"], ["size", "w"],
+        ["Transform", "ExtX"], ["transform", "extX"],
+        ["Bounds", "W"], ["Bounds", "Width"], ["bounds", "w"], ["bounds", "width"]
+      ]);
+    }
+
+    if (height === null) {
+      height = getNestedNumericProperty(object, [
+        ["Size", "Height"], ["Size", "H"], ["size", "height"], ["size", "h"],
+        ["Transform", "ExtY"], ["transform", "extY"],
+        ["Bounds", "H"], ["Bounds", "Height"], ["bounds", "h"], ["bounds", "height"]
+      ]);
+    }
+
+    if (x === null) {
+      x = getNestedNumericProperty(object, [
+        ["Position", "X"], ["Position", "Left"], ["position", "x"], ["position", "left"],
+        ["Transform", "OffX"], ["transform", "offX"],
+        ["Bounds", "X"], ["Bounds", "Left"], ["bounds", "x"], ["bounds", "left"]
+      ]);
+    }
+
+    if (y === null) {
+      y = getNestedNumericProperty(object, [
+        ["Position", "Y"], ["Position", "Top"], ["position", "y"], ["position", "top"],
+        ["Transform", "OffY"], ["transform", "offY"],
+        ["Bounds", "Y"], ["Bounds", "Top"], ["bounds", "y"], ["bounds", "top"]
+      ]);
+    }
+
+    if (rot === null) {
+      rot = getNestedNumericProperty(object, [
+        ["Transform", "Rot"], ["Transform", "Rotation"], ["transform", "rot"], ["transform", "rotation"]
+      ]);
+    }
+
+    return {
+      x: x,
+      y: y,
+      w: width,
+      h: height,
+      rot: rot
+    };
+  }
+
+  function hasUsableMetrics(object) {
+    var m = getObjectMetrics(object || {});
+    return m.w !== null || m.h !== null || m.x !== null || m.y !== null || m.rot !== null;
   }
 
   function setSectionDisabled(section, disabled) {
@@ -111,17 +196,18 @@
       aspectRatio = null;
     } else {
       var first = objects[0] || {};
+      var metrics = getObjectMetrics(first);
 
       if (isSingleSelection) {
-        setInputValue(elWidth, emuToMm(getNumericProperty(first, ["Width", "W", "width"], 0)));
-        setInputValue(elHeight, emuToMm(getNumericProperty(first, ["Height", "H", "height"], 0)));
-        setInputValue(elX, emuToMm(getNumericProperty(first, ["X", "Left", "PosX"], 0)));
-        setInputValue(elY, emuToMm(getNumericProperty(first, ["Y", "Top", "PosY"], 0)));
-        setInputValue(elRotation, getNumericProperty(first, ["Rot", "Rotation", "Angle"], 0));
+        setInputValue(elWidth, metrics.w !== null ? emuToMm(metrics.w) : "");
+        setInputValue(elHeight, metrics.h !== null ? emuToMm(metrics.h) : "");
+        setInputValue(elX, metrics.x !== null ? emuToMm(metrics.x) : "");
+        setInputValue(elY, metrics.y !== null ? emuToMm(metrics.y) : "");
+        setInputValue(elRotation, metrics.rot !== null ? metrics.rot : "");
 
-        var width = getNumericProperty(first, ["Width", "W", "width"], 0);
-        var height = getNumericProperty(first, ["Height", "H", "height"], 1);
-        aspectRatio = height ? width / height : null;
+        aspectRatio = (typeof metrics.w === "number" && typeof metrics.h === "number" && metrics.h !== 0)
+          ? metrics.w / metrics.h
+          : null;
       } else {
         setInputValue(elWidth, "");
         setInputValue(elHeight, "");
@@ -148,8 +234,34 @@
   }
 
   function normalizeSelectedObjects(result) {
+    function normalizeItem(item) {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+
+      // Some editor builds return descriptors in the form:
+      // { Type: "Shape", Value: { Width, Height, X, Y, ... } }
+      if (item.Value && typeof item.Value === "object") {
+        var merged = {};
+        var key;
+        for (key in item.Value) {
+          if (Object.prototype.hasOwnProperty.call(item.Value, key)) {
+            merged[key] = item.Value[key];
+          }
+        }
+        if (item.Type !== undefined) {
+          merged.Type = item.Type;
+        }
+        return merged;
+      }
+
+      return item;
+    }
+
     if (Array.isArray(result)) {
-      return result;
+      return result.map(normalizeItem).filter(function (item) {
+        return !!item;
+      });
     }
 
     if (!result) {
@@ -157,15 +269,21 @@
     }
 
     if (Array.isArray(result.selectedObjects)) {
-      return result.selectedObjects;
+      return result.selectedObjects.map(normalizeItem).filter(function (item) {
+        return !!item;
+      });
     }
 
     if (Array.isArray(result.objects)) {
-      return result.objects;
+      return result.objects.map(normalizeItem).filter(function (item) {
+        return !!item;
+      });
     }
 
     if (Array.isArray(result.items)) {
-      return result.items;
+      return result.items.map(normalizeItem).filter(function (item) {
+        return !!item;
+      });
     }
 
     return [];
@@ -174,31 +292,27 @@
   function loadSelectedDrawings(callback) {
     window.Asc.plugin.callCommand(function () {
       var result = [];
-      var presentation = Api.GetPresentation();
-      if (!presentation) {
+      var selection = Api.GetSelection ? Api.GetSelection() : null;
+      if (!selection) {
         return result;
       }
 
-      var slide = presentation.GetCurrentSlide();
-      if (!slide) {
+      if (selection.IsEmpty && selection.IsEmpty()) {
         return result;
       }
 
-      var drawings = slide.GetAllDrawings();
+      var drawings = selection.GetShapes ? selection.GetShapes() : [];
+
       var i;
       for (i = 0; i < drawings.length; i++) {
         var drawing = drawings[i];
-        var isSelected = drawing.IsSelected && drawing.IsSelected();
-        if (!isSelected) {
-          continue;
-        }
 
         result.push({
-          X: drawing.GetPosX ? drawing.GetPosX() : 0,
-          Y: drawing.GetPosY ? drawing.GetPosY() : 0,
-          Width: drawing.GetWidth ? drawing.GetWidth() : 0,
-          Height: drawing.GetHeight ? drawing.GetHeight() : 0,
-          Rot: drawing.GetRotation ? drawing.GetRotation() : 0,
+          X: drawing.GetPosX ? drawing.GetPosX() : null,
+          Y: drawing.GetPosY ? drawing.GetPosY() : null,
+          Width: drawing.GetWidth ? drawing.GetWidth() : null,
+          Height: drawing.GetHeight ? drawing.GetHeight() : null,
+          Rot: drawing.GetRotation ? drawing.GetRotation() : null,
           Name: drawing.GetName ? drawing.GetName() : ""
         });
       }
@@ -206,6 +320,38 @@
       return result;
     }, false, false, function (objects) {
       callback(Array.isArray(objects) ? objects : []);
+    });
+  }
+
+  function applySelection(objects) {
+    selectedObjects = normalizeSelectedObjects(objects);
+
+    if (selectedObjects.length === 1) {
+      var m = getObjectMetrics(selectedObjects[0] || {});
+      aspectRatio = (typeof m.w === "number" && typeof m.h === "number" && m.h !== 0)
+        ? m.w / m.h
+        : null;
+    } else {
+      aspectRatio = null;
+    }
+
+    updateUiFromSelection(selectedObjects);
+  }
+
+  function fetchSelectedObjects(callback) {
+    window.Asc.plugin.executeMethod("GetSelectedObjects", [], function (objects) {
+      var selected = normalizeSelectedObjects(objects);
+
+      if (selected.length > 0 && hasUsableMetrics(selected[0])) {
+        callback(selected);
+        return;
+      }
+
+      // Fallback for editors/builds where GetSelectedObjects does not provide
+      // drawing geometry: inspect selected drawings through DocBuilder.
+      loadSelectedDrawings(function (drawings) {
+        callback(normalizeSelectedObjects(drawings));
+      });
     });
   }
 
@@ -217,13 +363,12 @@
    * All parameters are optional – empty inputs are skipped.
    */
   function buildApplyScript(newW, newH, newX, newY, newRot) {
-    return "var pres    = Api.GetPresentation();"
-         + "var slide   = pres.GetCurrentSlide();"
-         + "var shapes  = slide.GetAllShapes();"
+      return "var selection = Api.GetSelection ? Api.GetSelection() : null;"
+        + "if (!selection) { return; }"
+        + "var shapes = selection.GetShapes ? selection.GetShapes() : [];"
          + "var i, s;"
          + "for (i = 0; i < shapes.length; i++) {"
          + "  s = shapes[i];"
-         + "  if (!s.IsSelected && !s.IsSelected()) { continue; }"
          + (newW !== null && newH !== null
               ? "  s.SetSize(" + newW + "," + newH + ");"
               : "")
@@ -282,29 +427,21 @@
   };
 
   function buildAlignScript(alignType) {
-    return "var pres   = Api.GetPresentation();"
-         + "var slide  = pres.GetCurrentSlide();"
-         + "var shapes = slide.GetAllShapes();"
+      return "var selection = Api.GetSelection ? Api.GetSelection() : null;"
+        + "if (!selection) { return; }"
+        + "var shapes = selection.GetShapes ? selection.GetShapes() : [];"
          + "var i, s;"
          + "for (i = 0; i < shapes.length; i++) {"
          + "  s = shapes[i];"
-         + "  if (!s.IsSelected && !s.IsSelected()) { continue; }"
          + "  s.SetAlignObject(\"" + alignType + "\", true);" // true = relative to slide
          + "}";
   }
 
   function buildDistributeScript(direction) {
     // direction: "h" | "v"
-    return "var pres   = Api.GetPresentation();"
-         + "var slide  = pres.GetCurrentSlide();"
-         + "var shapes = slide.GetAllShapes();"
-         + "var sel = [];"
-         + "var i;"
-         + "for (i = 0; i < shapes.length; i++) {"
-         + "  if (shapes[i].IsSelected && shapes[i].IsSelected()) {"
-         + "    sel.push(shapes[i]);"
-         + "  }"
-         + "}"
+    return "var selection = Api.GetSelection ? Api.GetSelection() : null;"
+         + "if (!selection) { return; }"
+         + "var sel = selection.GetShapes ? selection.GetShapes() : [];"
          + "if (sel.length < 2) { return; }"
          + (direction === "h"
              ? "sel[0].DistributeShapes(sel, true, false);"
@@ -328,9 +465,6 @@
       window.Asc.plugin.event_onSelectionChanged = refreshSelection;
     }
 
-    window.clearInterval(window.Asc.plugin._layoutSelectionTimer);
-    window.Asc.plugin._layoutSelectionTimer = window.setInterval(refreshSelection, 800);
-
     // Request the current selection immediately so the panel is populated
     // as soon as the plugin opens.
     refreshSelection();
@@ -340,36 +474,25 @@
    * Fetch selected objects from the editor via executeMethod and update the UI.
    */
   function refreshSelection() {
-    window.Asc.plugin.executeMethod("GetSelectionType", [], function (selectionType) {
-      if (typeof selectionType !== "string") {
-        window.Asc.plugin.executeMethod("GetSelectedObjects", [], function (objects) {
-          selectedObjects = normalizeSelectedObjects(objects);
-          updateUiFromSelection(selectedObjects);
-        });
-        return;
+    if (refreshInFlight) {
+      refreshQueued = true;
+      return;
+    }
+
+    refreshInFlight = true;
+
+    function finish() {
+      refreshInFlight = false;
+      if (refreshQueued) {
+        refreshQueued = false;
+        refreshSelection();
       }
+    }
 
-      if (selectionType !== "drawing") {
-        selectedObjects = [];
-        aspectRatio = null;
-        updateUiFromSelection(selectedObjects);
-        return;
-      }
-
-      loadSelectedDrawings(function (objects) {
-        selectedObjects = normalizeSelectedObjects(objects);
-
-        if (selectedObjects.length === 1) {
-          var o = selectedObjects[0] || {};
-          var w = getNumericProperty(o, ["Width", "W", "width"], 0);
-          var h = getNumericProperty(o, ["Height", "H", "height"], 1);
-          aspectRatio = h !== 0 ? w / h : null;
-        } else {
-          aspectRatio = null;
-        }
-
-        updateUiFromSelection(selectedObjects);
-      });
+    loadSelectedDrawings(function (drawings) {
+      var normalizedDrawings = normalizeSelectedObjects(drawings);
+      applySelection(normalizedDrawings);
+      finish();
     });
   }
 
