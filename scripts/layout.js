@@ -339,13 +339,13 @@
   }
 
   function getObjectMetrics(object) {
-    var width = getMethodNumericProperty(object, ["GetWidth", "GetW", "GetPathW", "GetXfrmExtX"],
+    var width = getMethodNumericProperty(object, ["GetWidth", "GetW", "GetXfrmExtX", "GetPathW"],
       getNumericProperty(object, ["Width", "W", "width", "w"], null));
-    var height = getMethodNumericProperty(object, ["GetHeight", "GetH", "GetPathH", "GetXfrmExtY"],
+      var height = getMethodNumericProperty(object, ["GetHeight", "GetH", "GetXfrmExtY", "GetPathH"],
       getNumericProperty(object, ["Height", "H", "height", "h"], null));
-    var x = getMethodNumericProperty(object, ["GetPosX", "GetX", "GetLeft", "GetStartX", "GetXfrmOffX"],
+    var x = getMethodNumericProperty(object, ["GetPosX", "GetX", "GetLeft", "GetXfrmOffX", "GetStartX"],
       getNumericProperty(object, ["X", "Left", "PosX", "x", "left"], null));
-    var y = getMethodNumericProperty(object, ["GetPosY", "GetY", "GetTop", "GetStartY", "GetXfrmOffY"],
+    var y = getMethodNumericProperty(object, ["GetPosY", "GetY", "GetTop", "GetXfrmOffY", "GetStartY"],
       getNumericProperty(object, ["Y", "Top", "PosY", "y", "top"], null));
     var rot = getMethodNumericProperty(object, ["GetRotation", "GetRot", "GetAngle"],
       getNumericProperty(object, ["Rot", "Rotation", "Angle", "rot", "rotation", "angle"], null));
@@ -353,9 +353,9 @@
     var boundsValue = null;
     var typeName = "";
 
-    if (object && typeof object.GetType === "function") {
+    if (object && (typeof object.GetClassType === "function" || typeof object.GetType === "function")) {
       try {
-        typeName = String(object.GetType());
+        typeName = String(typeof object.GetClassType === "function" ? object.GetClassType() : object.GetType());
       } catch (error) {
         typeName = "";
       }
@@ -390,7 +390,10 @@
       }
     }
 
-    if (isLineLike && boundsValue) {
+    // Lines are ApiShape objects in the presentation API. Their normal
+    // position and size getters are the editable geometry; endpoint/path
+    // methods are only a fallback for older editor builds.
+    if (isLineLike && boundsValue && (x === null || y === null || width === null || height === null)) {
       boundsMetrics = getLineMetrics(object, boundsValue);
     } else if (isLineLike && (x === null || y === null || width === null || height === null)) {
       boundsMetrics = getLineMetrics(object, boundsValue || {});
@@ -627,11 +630,19 @@
       return [value];
     }
 
-    if (selection.GetSelectedObjects && typeof selection.GetSelectedObjects === "function") {
-      var selectedObjectsList = selection.GetSelectedObjects();
+    if (selection.GetShapes && typeof selection.GetShapes === "function") {
+      var selectedObjectsList = selection.GetShapes();
       var selectedObjectsArray = asArray(selectedObjectsList);
       if (selectedObjectsArray.length > 0) {
         return selectedObjectsArray;
+      }
+    }
+
+    if (selection.GetSelectedObjects && typeof selection.GetSelectedObjects === "function") {
+      var selectedObjectsFallback = selection.GetSelectedObjects();
+      var selectedObjectsFallbackArray = asArray(selectedObjectsFallback);
+      if (selectedObjectsFallbackArray.length > 0) {
+        return selectedObjectsFallbackArray;
       }
     }
 
@@ -639,13 +650,6 @@
       var objects = asArray(selection.GetObjects());
       if (objects.length > 0) {
         return objects;
-      }
-    }
-
-    if (selection.GetShapes && typeof selection.GetShapes === "function") {
-      var shapes = asArray(selection.GetShapes());
-      if (shapes.length > 0) {
-        return shapes;
       }
     }
 
@@ -796,10 +800,17 @@
           return [value];
         }
 
-        if (selection.GetSelectedObjects && typeof selection.GetSelectedObjects === "function") {
-          var selectedObjectsList = asArrayLocal(selection.GetSelectedObjects());
+        if (selection.GetShapes && typeof selection.GetShapes === "function") {
+          var selectedObjectsList = asArrayLocal(selection.GetShapes());
           if (selectedObjectsList.length > 0) {
             return selectedObjectsList;
+          }
+        }
+
+        if (selection.GetSelectedObjects && typeof selection.GetSelectedObjects === "function") {
+          var selectedObjectsFallback = asArrayLocal(selection.GetSelectedObjects());
+          if (selectedObjectsFallback.length > 0) {
+            return selectedObjectsFallback;
           }
         }
 
@@ -807,13 +818,6 @@
           var objects = asArrayLocal(selection.GetObjects());
           if (objects.length > 0) {
             return objects;
-          }
-        }
-
-        if (selection.GetShapes && typeof selection.GetShapes === "function") {
-          var shapes = asArrayLocal(selection.GetShapes());
-          if (shapes.length > 0) {
-            return shapes;
           }
         }
 
@@ -880,9 +884,9 @@ var x = getMethodNumericPropertyLocal(drawing, ["GetPosX", "GetX", "GetLeft", "G
       var w = getMethodNumericPropertyLocal(drawing, ["GetWidth", "GetW", "GetPathW", "GetXfrmExtX"], null);
       var h = getMethodNumericPropertyLocal(drawing, ["GetHeight", "GetH", "GetPathH", "GetXfrmExtY"], null);
 
-        if (drawing.GetType) {
+        if (drawing.GetClassType || drawing.GetType) {
           try {
-            typeName = String(drawing.GetType());
+            typeName = String(drawing.GetClassType ? drawing.GetClassType() : drawing.GetType());
           } catch (error) {
             typeName = "";
           }
@@ -952,27 +956,27 @@ var x = getMethodNumericPropertyLocal(drawing, ["GetPosX", "GetX", "GetLeft", "G
   }
 
   function fetchSelectedObjects(callback) {
-    loadSelectedObjectsViaMethod(function (selected) {
-      if (selected.length > 0 && hasUsableMetrics(selected[0])) {
-        callback(selected);
+    // ApiSelection.GetShapes() is the documented Presentation API and also
+    // returns line drawings as ApiShape objects. Use it before descriptor
+    // methods, which do not consistently include lines across editor builds.
+    loadSelectedDrawings(function (drawings) {
+      var normalized = normalizeSelectedObjects(drawings);
+      if (normalized.length > 0 && hasUsableMetrics(normalized[0])) {
+        callback(normalized);
         return;
       }
 
-      // Get reliable geometry when method payload contains descriptors only.
-      loadSelectedDrawings(function (drawings) {
-        var normalized = normalizeSelectedObjects(drawings);
-        if (normalized.length > 0 && hasUsableMetrics(normalized[0])) {
-          callback(normalized);
+      loadSelectedObjectsViaMethod(function (selected) {
+        if (selected.length > 0 && hasUsableMetrics(selected[0])) {
+          callback(selected);
           return;
         }
 
-        // Keep descriptor selection if available so controls remain enabled.
         if (selected.length > 0) {
           callback(selected);
           return;
         }
 
-        // Final fallback: infer object selection by type.
         window.Asc.plugin.executeMethod("GetSelectionType", [], function (selectionType) {
           var type = typeof selectionType === "string" ? selectionType.toLowerCase() : "";
           var looksLikeObjectSelection = type === "drawing"
@@ -1002,7 +1006,7 @@ var x = getMethodNumericPropertyLocal(drawing, ["GetPosX", "GetX", "GetLeft", "G
   function buildApplyScript(newW, newH, newX, newY, newRot) {
       return "var selection = Api.GetSelection ? Api.GetSelection() : null;"
         + "if (!selection) { return; }"
-        + "var shapes = selection.GetSelectedObjects ? selection.GetSelectedObjects() : (selection.GetObjects ? selection.GetObjects() : (selection.GetShapes ? selection.GetShapes() : (selection.GetType || selection.GetBounds || selection.GetPosX || selection.GetWidth || selection.GetRotation ? [selection] : [])));"
+          + "var shapes = selection.GetShapes ? selection.GetShapes() : (selection.GetSelectedObjects ? selection.GetSelectedObjects() : (selection.GetObjects ? selection.GetObjects() : (selection.GetType || selection.GetBounds || selection.GetPosX || selection.GetWidth || selection.GetRotation ? [selection] : [])));"
         + "if (!Array.isArray(shapes)) { shapes = shapes ? [shapes] : []; }"
         + "var i, s, bounds, x, y, w, h;"
         + "for (i = 0; i < shapes.length; i++) {"
@@ -1095,7 +1099,7 @@ var x = getMethodNumericPropertyLocal(drawing, ["GetPosX", "GetX", "GetLeft", "G
       return "var pres = Api.GetPresentation ? Api.GetPresentation() : null;"
          + "var selection = Api.GetSelection ? Api.GetSelection() : null;"
         + "if (!pres || !selection) { return; }"
-         + "var shapes = selection.GetSelectedObjects ? selection.GetSelectedObjects() : (selection.GetObjects ? selection.GetObjects() : (selection.GetShapes ? selection.GetShapes() : (selection.GetType || selection.GetBounds || selection.GetPosX || selection.GetWidth || selection.GetRotation ? [selection] : [])));"
+         + "var shapes = selection.GetShapes ? selection.GetShapes() : (selection.GetSelectedObjects ? selection.GetSelectedObjects() : (selection.GetObjects ? selection.GetObjects() : (selection.GetType || selection.GetBounds || selection.GetPosX || selection.GetWidth || selection.GetRotation ? [selection] : [])));"
          + "if (!Array.isArray(shapes)) { shapes = shapes ? [shapes] : []; }"
         + "if (shapes.length < 2 && \"" + mode + "\" === \"selection\") { return; }"
         + "var i, s, x, y, w, h, nx, ny, bounds;"
