@@ -78,7 +78,17 @@
 
       <!-- ALIGN (relative to selected objects) ───── -->
       <section class="panel-section" id="section-align">
-        <h3 class="section-title">Align to Selection</h3>
+        <h3 class="section-title">Align</h3>
+        <div class="row">
+          <label class="radio-field">
+            <input type="radio" name="align-target" value="selection" checked>
+            <span>Selection</span>
+          </label>
+          <label class="radio-field">
+            <input type="radio" name="align-target" value="slide">
+            <span>Slide</span>
+          </label>
+        </div>
         <div class="btn-grid">
           <button class="icon-btn" data-align="left"     title="Align left">
             <span class="icon-svg icon-align-left" aria-hidden="true"></span>

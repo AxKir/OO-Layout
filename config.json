@@ -9,12 +9,20 @@
     {
       "description": "Layout Panel - a plug in for Only Office Presentation Editor that quickly provides size, position and alignment controls for the selected object without digging through menus.",
       "url": "index.html",
-      "icons": "resources/img/icon.svg",
+      "icons": [
+        "resources/img/icon.png",
+        "resources/img/icon@2x.png"
+      ],
       "EditorsSupport": ["slide"],
       "isViewer": false,
       "initDataType": "none",
       "initOnSelectionChanged": false,
       "type": "panel",
+      "translations": [
+        "translations/langs.json",
+        "translations/de-DE.json",
+        "translations/en-US.json"
+      ],
       "store": {
         "background": {
           "light": "linear-gradient(45deg, rgb(8, 65, 108) 0%, rgb(113, 189, 140) 100%)",

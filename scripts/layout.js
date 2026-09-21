@@ -49,6 +49,11 @@
   var elRotation        = document.getElementById("input-rotation");
   var elLockAspect      = document.getElementById("lock-aspect");
 
+  function getAlignTargetValue() {
+    var checked = document.querySelector('input[name="align-target"]:checked');
+    return checked && checked.value === "slide" ? "slide" : "selection";
+  }
+
   function executeCommandAndRefresh(script) {
     window.Asc.plugin.callCommand(new Function(script), false, true, function () { // eslint-disable-line no-new-func
       loadSelectedDrawings(function (drawings) {
@@ -77,14 +82,179 @@
     el.value = value !== null && value !== undefined ? value : "";
   }
 
+  function normalizeKeyName(key) {
+    return String(key || "").toLowerCase();
+  }
+
+  function findNestedPropertyValue(object, names) {
+    var targets = [];
+    var i;
+    var queue;
+    var seen;
+    var found = null;
+
+    for (i = 0; i < names.length; i++) {
+      targets.push(normalizeKeyName(names[i]));
+    }
+
+    queue = [object];
+    seen = [];
+
+    while (queue.length > 0 && found === null) {
+      var current = queue.shift();
+      if (!current || typeof current !== "object") {
+        continue;
+      }
+
+      if (seen.indexOf(current) !== -1) {
+        continue;
+      }
+      seen.push(current);
+
+      if (Array.isArray(current)) {
+        queue.push.apply(queue, current);
+        continue;
+      }
+
+      Object.keys(current).forEach(function (key) {
+        if (found !== null) {
+          return;
+        }
+
+        var normalizedKey = normalizeKeyName(key);
+        if (targets.indexOf(normalizedKey) !== -1) {
+          var value = current[key];
+          if (value !== undefined && value !== null) {
+            found = value;
+          }
+          return;
+        }
+
+        if (current[key] && typeof current[key] === "object") {
+          queue.push(current[key]);
+        }
+      });
+    }
+
+    return found;
+  }
+
   function getNumericProperty(object, names, fallback) {
     var i;
     for (i = 0; i < names.length; i++) {
-      if (object && object[names[i]] !== undefined && object[names[i]] !== null) {
-        return object[names[i]];
+      var value = findNestedPropertyValue(object, [names[i]]);
+      if (value !== undefined && value !== null) {
+        if (typeof value === "number" && !isNaN(value)) {
+          return value;
+        }
+
+        if (typeof value === "string" && value.trim() !== "") {
+          var parsed = parseFloat(value);
+          if (!isNaN(parsed)) {
+            return parsed;
+          }
+        }
       }
     }
     return fallback;
+  }
+
+  function getMethodNumericProperty(object, methodNames, fallback) {
+    var i;
+    for (i = 0; i < methodNames.length; i++) {
+      var methodName = methodNames[i];
+      if (object && typeof object[methodName] === "function") {
+        try {
+          var value = object[methodName]();
+          if (typeof value === "number" && !isNaN(value)) {
+            return value;
+          }
+          if (typeof value === "string" && value.trim() !== "") {
+            var parsed = parseFloat(value);
+            if (!isNaN(parsed)) {
+              return parsed;
+            }
+          }
+        } catch (error) {
+          // Ignore getter failures and continue with other candidates.
+        }
+      }
+    }
+    return fallback;
+  }
+
+  function hasAnyMethod(object, methodNames) {
+    var i;
+    for (i = 0; i < methodNames.length; i++) {
+      if (object && typeof object[methodNames[i]] === "function") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function toNumber(value) {
+    if (typeof value === "number" && !isNaN(value)) {
+      return value;
+    }
+
+    if (typeof value === "string" && value.trim() !== "") {
+      var parsed = parseFloat(value);
+      return isNaN(parsed) ? null : parsed;
+    }
+
+    return null;
+  }
+
+  function getBoundsMetrics(value) {
+    var bounds = {};
+    var left;
+    var top;
+    var right;
+    var bottom;
+    var width;
+    var height;
+
+    if (Array.isArray(value) && value.length >= 4) {
+      left = toNumber(value[0]);
+      top = toNumber(value[1]);
+      right = toNumber(value[2]);
+      bottom = toNumber(value[3]);
+      bounds = {
+        Left: left,
+        Top: top,
+        Right: right,
+        Bottom: bottom,
+        X: left,
+        Y: top,
+        W: right !== null && left !== null ? right - left : null,
+        H: bottom !== null && top !== null ? bottom - top : null
+      };
+    } else if (value && typeof value === "object") {
+      bounds = value;
+    }
+
+    left = getNumericProperty(bounds, ["X", "Left", "x", "left"], null);
+    top = getNumericProperty(bounds, ["Y", "Top", "y", "top"], null);
+    right = getNumericProperty(bounds, ["Right", "R", "right", "r"], null);
+    bottom = getNumericProperty(bounds, ["Bottom", "B", "bottom", "b"], null);
+    width = getNumericProperty(bounds, ["Width", "W", "width", "w"], null);
+    height = getNumericProperty(bounds, ["Height", "H", "height", "h"], null);
+
+    if (width === null && left !== null && right !== null) {
+      width = right - left;
+    }
+
+    if (height === null && top !== null && bottom !== null) {
+      height = bottom - top;
+    }
+
+    return {
+      x: left,
+      y: top,
+      w: width,
+      h: height
+    };
   }
 
   function getNestedNumericProperty(object, paths) {
@@ -110,11 +280,60 @@
   }
 
   function getObjectMetrics(object) {
-    var width = getNumericProperty(object, ["Width", "W", "width", "w"], null);
-    var height = getNumericProperty(object, ["Height", "H", "height", "h"], null);
-    var x = getNumericProperty(object, ["X", "Left", "PosX", "x", "left"], null);
-    var y = getNumericProperty(object, ["Y", "Top", "PosY", "y", "top"], null);
-    var rot = getNumericProperty(object, ["Rot", "Rotation", "Angle", "rot", "rotation", "angle"], null);
+    var width = getMethodNumericProperty(object, ["GetWidth", "GetW", "GetPathW", "GetXfrmExtX"],
+      getNumericProperty(object, ["Width", "W", "width", "w"], null));
+    var height = getMethodNumericProperty(object, ["GetHeight", "GetH", "GetPathH", "GetXfrmExtY"],
+      getNumericProperty(object, ["Height", "H", "height", "h"], null));
+    var x = getMethodNumericProperty(object, ["GetPosX", "GetX", "GetLeft", "GetStartX", "GetXfrmOffX"],
+      getNumericProperty(object, ["X", "Left", "PosX", "x", "left"], null));
+    var y = getMethodNumericProperty(object, ["GetPosY", "GetY", "GetTop", "GetStartY", "GetXfrmOffY"],
+      getNumericProperty(object, ["Y", "Top", "PosY", "y", "top"], null));
+    var rot = getMethodNumericProperty(object, ["GetRotation", "GetRot", "GetAngle"],
+      getNumericProperty(object, ["Rot", "Rotation", "Angle", "rot", "rotation", "angle"], null));
+    var boundsMetrics = {};
+    var boundsValue = null;
+    var typeName = "";
+
+    if (object && typeof object.GetType === "function") {
+      try {
+        typeName = String(object.GetType());
+      } catch (error) {
+        typeName = "";
+      }
+    }
+
+    if (!typeName) {
+      typeName = String(findNestedPropertyValue(object, ["Type", "type", "ObjectType", "objectType", "ClassName", "className"]) || "");
+    }
+
+    var isLineLike = /line|connector|curve|polyline|path/.test(typeName.toLowerCase());
+
+    if (object && typeof object.GetBounds === "function") {
+      try {
+        boundsValue = object.GetBounds();
+      } catch (error) {
+        boundsValue = null;
+      }
+    }
+
+    if (!boundsValue) {
+      boundsValue = findNestedPropertyValue(object, ["Bounds", "bounds", "BBox", "bbox", "Transform", "transform"]);
+    }
+
+    if (!boundsValue && object && object.Value && typeof object.Value === "object") {
+      boundsValue = findNestedPropertyValue(object.Value, ["Bounds", "bounds", "BBox", "bbox", "Transform", "transform"]);
+    }
+
+    if (boundsValue && !isLineLike) {
+      var shapeGettersPresent = hasAnyMethod(object, ["GetPosX", "GetX", "GetLeft", "GetPosY", "GetY", "GetTop", "GetWidth", "GetW", "GetHeight", "GetH"]);
+      if (!shapeGettersPresent) {
+        isLineLike = true;
+      }
+    }
+
+    if (isLineLike && boundsValue) {
+      boundsMetrics = getBoundsMetrics(boundsValue);
+    }
 
     if (width === null) {
       width = getNestedNumericProperty(object, [
@@ -152,6 +371,22 @@
       rot = getNestedNumericProperty(object, [
         ["Transform", "Rot"], ["Transform", "Rotation"], ["transform", "rot"], ["transform", "rotation"]
       ]);
+    }
+
+    if (isLineLike && x === null) {
+      x = boundsMetrics.x;
+    }
+
+    if (isLineLike && y === null) {
+      y = boundsMetrics.y;
+    }
+
+    if (isLineLike && width === null) {
+      width = boundsMetrics.w;
+    }
+
+    if (isLineLike && height === null) {
+      height = boundsMetrics.h;
     }
 
     return {
@@ -252,21 +487,35 @@
 
       // Some editor builds return descriptors in the form:
       // { Type: "Shape", Value: { Width, Height, X, Y, ... } }
-      if (item.Value && typeof item.Value === "object") {
+      var valueSource = item.Value || item.value || null;
+      if (valueSource && typeof valueSource === "object") {
         var merged = {};
         var key;
-        for (key in item.Value) {
-          if (Object.prototype.hasOwnProperty.call(item.Value, key)) {
-            merged[key] = item.Value[key];
+        for (key in valueSource) {
+          if (Object.prototype.hasOwnProperty.call(valueSource, key)) {
+            merged[key] = valueSource[key];
           }
         }
         if (item.Type !== undefined) {
           merged.Type = item.Type;
         }
+        if (item.type !== undefined) {
+          merged.Type = item.type;
+        }
         return merged;
       }
 
       return item;
+    }
+
+    function asArray(value) {
+      if (Array.isArray(value)) {
+        return value;
+      }
+      if (!value) {
+        return [];
+      }
+      return [value];
     }
 
     if (Array.isArray(result)) {
@@ -297,11 +546,198 @@
       });
     }
 
+    return asArray(result).map(normalizeItem).filter(function (item) {
+      return !!item;
+    });
+  }
+
+  function getSelectionObjects(selection) {
+    if (!selection) {
+      return [];
+    }
+
+    function asArray(value) {
+      if (Array.isArray(value)) {
+        return value;
+      }
+      if (!value) {
+        return [];
+      }
+      return [value];
+    }
+
+    if (selection.GetSelectedObjects && typeof selection.GetSelectedObjects === "function") {
+      var selectedObjectsList = selection.GetSelectedObjects();
+      var selectedObjectsArray = asArray(selectedObjectsList);
+      if (selectedObjectsArray.length > 0) {
+        return selectedObjectsArray;
+      }
+    }
+
+    if (selection.GetObjects && typeof selection.GetObjects === "function") {
+      var objects = asArray(selection.GetObjects());
+      if (objects.length > 0) {
+        return objects;
+      }
+    }
+
+    if (selection.GetShapes && typeof selection.GetShapes === "function") {
+      var shapes = asArray(selection.GetShapes());
+      if (shapes.length > 0) {
+        return shapes;
+      }
+    }
+
+    if (selection.GetType || selection.GetBounds || selection.GetPosX || selection.GetWidth || selection.GetRotation) {
+      return asArray(selection);
+    }
+
     return [];
   }
 
   function loadSelectedDrawings(callback) {
     window.Asc.plugin.callCommand(function () {
+      function toNumberLocal(value) {
+        if (typeof value === "number" && !isNaN(value)) {
+          return value;
+        }
+
+        if (typeof value === "string" && value.trim() !== "") {
+          var parsed = parseFloat(value);
+          return isNaN(parsed) ? null : parsed;
+        }
+
+        return null;
+      }
+
+      function getBoundsMetricsLocal(value) {
+        var bounds = {};
+        var left;
+        var top;
+        var right;
+        var bottom;
+        var width;
+        var height;
+
+        if (Array.isArray(value) && value.length >= 4) {
+          left = toNumberLocal(value[0]);
+          top = toNumberLocal(value[1]);
+          right = toNumberLocal(value[2]);
+          bottom = toNumberLocal(value[3]);
+          bounds = {
+            Left: left,
+            Top: top,
+            Right: right,
+            Bottom: bottom,
+            X: left,
+            Y: top,
+            W: right !== null && left !== null ? right - left : null,
+            H: bottom !== null && top !== null ? bottom - top : null
+          };
+        } else if (value && typeof value === "object") {
+          bounds = value;
+        }
+
+        left = bounds.X !== undefined && bounds.X !== null ? bounds.X : (bounds.Left !== undefined && bounds.Left !== null ? bounds.Left : null);
+        top = bounds.Y !== undefined && bounds.Y !== null ? bounds.Y : (bounds.Top !== undefined && bounds.Top !== null ? bounds.Top : null);
+        right = bounds.Right !== undefined && bounds.Right !== null ? bounds.Right : (bounds.R !== undefined && bounds.R !== null ? bounds.R : null);
+        bottom = bounds.Bottom !== undefined && bounds.Bottom !== null ? bounds.Bottom : (bounds.B !== undefined && bounds.B !== null ? bounds.B : null);
+        width = bounds.Width !== undefined && bounds.Width !== null ? bounds.Width : (bounds.W !== undefined && bounds.W !== null ? bounds.W : null);
+        height = bounds.Height !== undefined && bounds.Height !== null ? bounds.Height : (bounds.H !== undefined && bounds.H !== null ? bounds.H : null);
+
+        if (width === null && left !== null && right !== null) {
+          width = right - left;
+        }
+
+        if (height === null && top !== null && bottom !== null) {
+          height = bottom - top;
+        }
+
+        return {
+          x: left,
+          y: top,
+          w: width,
+          h: height
+        };
+      }
+
+      function getSelectionObjectsLocal(selection) {
+        if (!selection) {
+          return [];
+        }
+
+        function asArrayLocal(value) {
+          if (Array.isArray(value)) {
+            return value;
+          }
+          if (!value) {
+            return [];
+          }
+          return [value];
+        }
+
+        if (selection.GetSelectedObjects && typeof selection.GetSelectedObjects === "function") {
+          var selectedObjectsList = asArrayLocal(selection.GetSelectedObjects());
+          if (selectedObjectsList.length > 0) {
+            return selectedObjectsList;
+          }
+        }
+
+        if (selection.GetObjects && typeof selection.GetObjects === "function") {
+          var objects = asArrayLocal(selection.GetObjects());
+          if (objects.length > 0) {
+            return objects;
+          }
+        }
+
+        if (selection.GetShapes && typeof selection.GetShapes === "function") {
+          var shapes = asArrayLocal(selection.GetShapes());
+          if (shapes.length > 0) {
+            return shapes;
+          }
+        }
+
+        if (selection.GetType || selection.GetBounds || selection.GetPosX || selection.GetWidth || selection.GetRotation) {
+          return asArrayLocal(selection);
+        }
+
+        return [];
+      }
+
+      function getMethodNumericPropertyLocal(object, methodNames, fallback) {
+        var i;
+        for (i = 0; i < methodNames.length; i++) {
+          var methodName = methodNames[i];
+          if (object && typeof object[methodName] === "function") {
+            try {
+              var value = object[methodName]();
+              if (typeof value === "number" && !isNaN(value)) {
+                return value;
+              }
+              if (typeof value === "string" && value.trim() !== "") {
+                var parsed = parseFloat(value);
+                if (!isNaN(parsed)) {
+                  return parsed;
+                }
+              }
+            } catch (error) {
+              // Ignore getter failures and continue with other candidates.
+            }
+          }
+        }
+        return fallback;
+      }
+
+      function hasAnyMethodLocal(object, methodNames) {
+        var i;
+        for (i = 0; i < methodNames.length; i++) {
+          if (object && typeof object[methodNames[i]] === "function") {
+            return true;
+          }
+        }
+        return false;
+      }
+
       var result = [];
       var selection = Api.GetSelection ? Api.GetSelection() : null;
       if (!selection) {
@@ -312,18 +748,52 @@
         return result;
       }
 
-      var drawings = selection.GetShapes ? selection.GetShapes() : [];
+      var drawings = getSelectionObjectsLocal(selection);
 
       var i;
       for (i = 0; i < drawings.length; i++) {
         var drawing = drawings[i];
+        var typeName = "";
+        var bounds = null;
+var x = getMethodNumericPropertyLocal(drawing, ["GetPosX", "GetX", "GetLeft", "GetStartX", "GetXfrmOffX"], null);
+      var y = getMethodNumericPropertyLocal(drawing, ["GetPosY", "GetY", "GetTop", "GetStartY", "GetXfrmOffY"], null);
+      var w = getMethodNumericPropertyLocal(drawing, ["GetWidth", "GetW", "GetPathW", "GetXfrmExtX"], null);
+      var h = getMethodNumericPropertyLocal(drawing, ["GetHeight", "GetH", "GetPathH", "GetXfrmExtY"], null);
+
+        if (drawing.GetType) {
+          try {
+            typeName = String(drawing.GetType());
+          } catch (error) {
+            typeName = "";
+          }
+        }
+
+        var isLineLike = /line|connector|curve|polyline|path/.test(typeName.toLowerCase());
+
+        if (drawing.GetBounds) {
+          try {
+            bounds = drawing.GetBounds();
+          } catch (error) {
+            bounds = null;
+          }
+        }
+
+        if (bounds && (isLineLike || !hasAnyMethodLocal(drawing, ["GetPosX", "GetX", "GetLeft", "GetPosY", "GetY", "GetTop", "GetWidth", "GetW", "GetHeight", "GetH"]) || (x === null && y === null && w === null && h === null))) {
+          var boundsMetrics = getBoundsMetricsLocal(bounds);
+          x = x !== null ? x : boundsMetrics.x;
+          y = y !== null ? y : boundsMetrics.y;
+          w = w !== null ? w : boundsMetrics.w;
+          h = h !== null ? h : boundsMetrics.h;
+        }
 
         result.push({
-          X: drawing.GetPosX ? drawing.GetPosX() : null,
-          Y: drawing.GetPosY ? drawing.GetPosY() : null,
-          Width: drawing.GetWidth ? drawing.GetWidth() : null,
-          Height: drawing.GetHeight ? drawing.GetHeight() : null,
-          Rot: drawing.GetRotation ? drawing.GetRotation() : null,
+          Type: typeName,
+          Bounds: bounds,
+          X: x,
+          Y: y,
+          Width: w,
+          Height: h,
+          Rot: getMethodNumericPropertyLocal(drawing, ["GetRotation", "GetRot", "GetAngle"], null),
           Name: drawing.GetName ? drawing.GetName() : ""
         });
       }
@@ -384,7 +854,11 @@
             || type === "object"
             || type === "image"
             || type === "chart"
-            || type === "group";
+            || type === "group"
+            || type === "line"
+            || type === "connector"
+            || type === "curve"
+            || type === "polyline";
 
           callback(looksLikeObjectSelection ? [{}] : []);
         });
@@ -402,20 +876,26 @@
   function buildApplyScript(newW, newH, newX, newY, newRot) {
       return "var selection = Api.GetSelection ? Api.GetSelection() : null;"
         + "if (!selection) { return; }"
-        + "var shapes = selection.GetShapes ? selection.GetShapes() : [];"
-         + "var i, s;"
-         + "for (i = 0; i < shapes.length; i++) {"
-         + "  s = shapes[i];"
-         + (newW !== null && newH !== null
-              ? "  s.SetSize(" + newW + "," + newH + ");"
+        + "var shapes = selection.GetSelectedObjects ? selection.GetSelectedObjects() : (selection.GetObjects ? selection.GetObjects() : (selection.GetShapes ? selection.GetShapes() : (selection.GetType || selection.GetBounds || selection.GetPosX || selection.GetWidth || selection.GetRotation ? [selection] : [])));"
+        + "if (!Array.isArray(shapes)) { shapes = shapes ? [shapes] : []; }"
+        + "var i, s, bounds, x, y, w, h;"
+        + "for (i = 0; i < shapes.length; i++) {"
+        + "  s = shapes[i];"
+        + "  bounds = s.GetBounds ? s.GetBounds() : null;"
+        + "  x = s.GetPosX ? s.GetPosX() : (s.GetX ? s.GetX() : (s.GetLeft ? s.GetLeft() : (bounds && (bounds.Left !== undefined || bounds.X !== undefined) ? (bounds.Left !== undefined ? bounds.Left : bounds.X) : null)));"
+        + "  y = s.GetPosY ? s.GetPosY() : (s.GetY ? s.GetY() : (s.GetTop ? s.GetTop() : (bounds && (bounds.Top !== undefined || bounds.Y !== undefined) ? (bounds.Top !== undefined ? bounds.Top : bounds.Y) : null)));"
+        + "  w = s.GetWidth ? s.GetWidth() : (s.GetW ? s.GetW() : (bounds ? (bounds.Width !== undefined ? bounds.Width : (bounds.W !== undefined ? bounds.W : (bounds.Right !== undefined && bounds.Left !== undefined ? bounds.Right - bounds.Left : null))) : null));"
+        + "  h = s.GetHeight ? s.GetHeight() : (s.GetH ? s.GetH() : (bounds ? (bounds.Height !== undefined ? bounds.Height : (bounds.H !== undefined ? bounds.H : (bounds.Bottom !== undefined && bounds.Top !== undefined ? bounds.Bottom - bounds.Top : null))) : null));"
+        + (newW !== null && newH !== null
+              ? "  if (s.SetSize) { s.SetSize(" + newW + "," + newH + "); }"
               : "")
-         + (newX !== null && newY !== null
-              ? "  s.SetPosition(" + newX + "," + newY + ");"
+        + (newX !== null && newY !== null
+              ? "  if (s.SetPosition) { s.SetPosition(" + newX + "," + newY + "); }"
               : "")
-         + (newRot !== null
+        + (newRot !== null
               ? "  if (s.SetRotation) { s.SetRotation(" + newRot + "); }"
               : "")
-         + "}";
+        + "}";
   }
 
   function applyLayoutValues() {
@@ -480,89 +960,74 @@
     "bottom":   "bottom"
   };
 
-  function buildAlignScript(alignType) {
+  function buildAlignScript(alignType, targetMode) {
+      var mode = targetMode === "slide" ? "slide" : "selection";
+      var relativeModeScript = mode === "slide"
+          ? "var slideWidth = 0, slideHeight = 0; var slide = null; if (pres && pres.GetCurrentSlide) { slide = pres.GetCurrentSlide ? pres.GetCurrentSlide() : null; } if (slide && slide.GetWidth) { slideWidth = slide.GetWidth(); } if (slide && slide.GetHeight) { slideHeight = slide.GetHeight(); } if (slideWidth === 0 && pres && pres.GetWidth) { slideWidth = pres.GetWidth(); } if (slideHeight === 0 && pres && pres.GetHeight) { slideHeight = pres.GetHeight(); } if (slideWidth === 0 && pres && pres.GetPageWidth) { slideWidth = pres.GetPageWidth(); } if (slideHeight === 0 && pres && pres.GetPageHeight) { slideHeight = pres.GetPageHeight(); } if (slideWidth === 0 && pres && pres.GetSlides) { var allSlides = pres.GetSlides(); if (allSlides && allSlides.length) { var firstSlide = allSlides[0]; if (firstSlide && firstSlide.GetWidth) { slideWidth = firstSlide.GetWidth(); } if (firstSlide && firstSlide.GetHeight) { slideHeight = firstSlide.GetHeight(); } } } "
+          : "var minX = null, minY = null, maxX = null, maxY = null;";
+
       return "var pres = Api.GetPresentation ? Api.GetPresentation() : null;"
          + "var selection = Api.GetSelection ? Api.GetSelection() : null;"
         + "if (!pres || !selection) { return; }"
-         + "var shapes = selection.GetShapes ? selection.GetShapes() : [];"
-        + "if (shapes.length < 2) { return; }"
-        + "var i, s, x, y, w, h, nx, ny;"
-        + "var minX = null, minY = null, maxX = null, maxY = null;"
+         + "var shapes = selection.GetSelectedObjects ? selection.GetSelectedObjects() : (selection.GetObjects ? selection.GetObjects() : (selection.GetShapes ? selection.GetShapes() : (selection.GetType || selection.GetBounds || selection.GetPosX || selection.GetWidth || selection.GetRotation ? [selection] : [])));"
+         + "if (!Array.isArray(shapes)) { shapes = shapes ? [shapes] : []; }"
+        + "if (shapes.length < 2 && \"" + mode + "\" === \"selection\") { return; }"
+        + "var i, s, x, y, w, h, nx, ny, bounds;"
+        + relativeModeScript
+        + "if (\"" + mode + "\" === \"selection\") {"
         + "for (i = 0; i < shapes.length; i++) {"
         + "  s = shapes[i];"
-        + "  x = s.GetPosX ? s.GetPosX() : null;"
-        + "  y = s.GetPosY ? s.GetPosY() : null;"
-        + "  w = s.GetWidth ? s.GetWidth() : null;"
-        + "  h = s.GetHeight ? s.GetHeight() : null;"
-        + "  if (x === null || y === null || w === null || h === null) { continue; }"
+        + "  bounds = s.GetBounds ? s.GetBounds() : null;"
+        + "  x = s.GetPosX ? s.GetPosX() : (s.GetX ? s.GetX() : (s.GetLeft ? s.GetLeft() : (bounds && (bounds.Left !== undefined || bounds.X !== undefined) ? (bounds.Left !== undefined ? bounds.Left : bounds.X) : null)));"
+        + "  y = s.GetPosY ? s.GetPosY() : (s.GetY ? s.GetY() : (s.GetTop ? s.GetTop() : (bounds && (bounds.Top !== undefined || bounds.Y !== undefined) ? (bounds.Top !== undefined ? bounds.Top : bounds.Y) : null)));"
+        + "  w = s.GetWidth ? s.GetWidth() : (s.GetW ? s.GetW() : (bounds ? (bounds.Width !== undefined ? bounds.Width : (bounds.W !== undefined ? bounds.W : (bounds.Right !== undefined && bounds.Left !== undefined ? bounds.Right - bounds.Left : null))) : null));"
+        + "  h = s.GetHeight ? s.GetHeight() : (s.GetH ? s.GetH() : (bounds ? (bounds.Height !== undefined ? bounds.Height : (bounds.H !== undefined ? bounds.H : (bounds.Bottom !== undefined && bounds.Top !== undefined ? bounds.Bottom - bounds.Top : null))) : null));"
+        + "  if (x === null || y === null) { continue; }"
         + "  if (minX === null || x < minX) { minX = x; }"
         + "  if (minY === null || y < minY) { minY = y; }"
-        + "  if (maxX === null || (x + w) > maxX) { maxX = x + w; }"
-        + "  if (maxY === null || (y + h) > maxY) { maxY = y + h; }"
+        + "  if (maxX === null || (x + (w !== null ? w : 0)) > maxX) { maxX = x + (w !== null ? w : 0); }"
+        + "  if (maxY === null || (y + (h !== null ? h : 0)) > maxY) { maxY = y + (h !== null ? h : 0); }"
         + "}"
         + "if (minX === null || minY === null || maxX === null || maxY === null) { return; }"
         + "var centerX = Math.round((minX + maxX) / 2);"
         + "var centerY = Math.round((minY + maxY) / 2);"
+        + "}"
+        + "if (\"" + mode + "\" === \"slide\") {"
+        + "if (slideWidth === 0) { slideWidth = 100000; }"
+        + "if (slideHeight === 0) { slideHeight = 100000; }"
+        + "var slideCenterX = Math.round(slideWidth / 2);"
+        + "var slideCenterY = Math.round(slideHeight / 2);"
+        + "}"
          + "for (i = 0; i < shapes.length; i++) {"
          + "  s = shapes[i];"
-         + "  x = s.GetPosX ? s.GetPosX() : null;"
-         + "  y = s.GetPosY ? s.GetPosY() : null;"
-         + "  w = s.GetWidth ? s.GetWidth() : null;"
-         + "  h = s.GetHeight ? s.GetHeight() : null;"
+         + "  bounds = s.GetBounds ? s.GetBounds() : null;"
+         + "  x = s.GetPosX ? s.GetPosX() : (s.GetX ? s.GetX() : (s.GetLeft ? s.GetLeft() : (bounds && (bounds.Left !== undefined || bounds.X !== undefined) ? (bounds.Left !== undefined ? bounds.Left : bounds.X) : null)));"
+         + "  y = s.GetPosY ? s.GetPosY() : (s.GetY ? s.GetY() : (s.GetTop ? s.GetTop() : (bounds && (bounds.Top !== undefined || bounds.Y !== undefined) ? (bounds.Top !== undefined ? bounds.Top : bounds.Y) : null)));"
+         + "  w = s.GetWidth ? s.GetWidth() : (s.GetW ? s.GetW() : (bounds ? (bounds.Width !== undefined ? bounds.Width : (bounds.W !== undefined ? bounds.W : (bounds.Right !== undefined && bounds.Left !== undefined ? bounds.Right - bounds.Left : null))) : null));"
+         + "  h = s.GetHeight ? s.GetHeight() : (s.GetH ? s.GetH() : (bounds ? (bounds.Height !== undefined ? bounds.Height : (bounds.H !== undefined ? bounds.H : (bounds.Bottom !== undefined && bounds.Top !== undefined ? bounds.Bottom - bounds.Top : null))) : null));"
          + "  if (x === null || y === null) { continue; }"
          + "  nx = x;"
          + "  ny = y;"
-        + (alignType === "left" ? "  nx = minX;" : "")
-        + (alignType === "center" ? "  if (w !== null) { nx = Math.round(centerX - (w / 2)); }" : "")
-        + (alignType === "right" ? "  if (w !== null) { nx = maxX - w; }" : "")
-        + (alignType === "top" ? "  ny = minY;" : "")
-        + (alignType === "ctr" ? "  if (h !== null) { ny = Math.round(centerY - (h / 2)); }" : "")
-        + (alignType === "bottom" ? "  if (h !== null) { ny = maxY - h; }" : "")
+        + (alignType === "left" ? "  nx = (\"" + mode + "\" === \"selection\") ? minX : 0;" : "")
+        + (alignType === "center" ? "  if (w !== null) { nx = (\"" + mode + "\" === \"selection\") ? Math.round(centerX - (w / 2)) : Math.round(slideCenterX - (w / 2)); }" : "")
+        + (alignType === "right" ? "  if (w !== null) { nx = (\"" + mode + "\" === \"selection\") ? maxX - w : slideWidth - w; }" : "")
+        + (alignType === "top" ? "  ny = (\"" + mode + "\" === \"selection\") ? minY : 0;" : "")
+        + (alignType === "ctr" ? "  if (h !== null) { ny = (\"" + mode + "\" === \"selection\") ? Math.round(centerY - (h / 2)) : Math.round(slideCenterY - (h / 2)); }" : "")
+        + (alignType === "bottom" ? "  if (h !== null) { ny = (\"" + mode + "\" === \"selection\") ? maxY - h : slideHeight - h; }" : "")
          + "  if (s.SetPosition) { s.SetPosition(nx, ny); }"
          + "}";
   }
 
-  function buildDistributeScript(direction) {
-    // direction: "h" | "v"
-    return "var selection = Api.GetSelection ? Api.GetSelection() : null;"
-         + "if (!selection) { return; }"
-         + "var sel = selection.GetShapes ? selection.GetShapes() : [];"
-         + "if (sel.length < 3) { return; }"
-         + "var items = [];"
-         + "var i, s, x, y, w, h;"
-         + "for (i = 0; i < sel.length; i++) {"
-         + "  s = sel[i];"
-         + "  x = s.GetPosX ? s.GetPosX() : null;"
-         + "  y = s.GetPosY ? s.GetPosY() : null;"
-         + "  w = s.GetWidth ? s.GetWidth() : null;"
-         + "  h = s.GetHeight ? s.GetHeight() : null;"
-         + "  if (x === null || y === null || w === null || h === null) { continue; }"
-         + "  items.push({ s: s, x: x, y: y, w: w, h: h });"
-         + "}"
-         + "if (items.length < 3) { return; }"
-         + (direction === "h"
-             ? "items.sort(function(a,b){ return a.x - b.x; });"
-               + "var start = items[0].x;"
-               + "var end = items[items.length - 1].x + items[items.length - 1].w;"
-               + "var total = 0;"
-               + "for (i = 0; i < items.length; i++) { total += items[i].w; }"
-               + "var gap = (end - start - total) / (items.length - 1);"
-               + "var pos = start;"
-               + "for (i = 0; i < items.length; i++) {"
-               + "  if (items[i].s.SetPosition) { items[i].s.SetPosition(Math.round(pos), items[i].y); }"
-               + "  pos += items[i].w + gap;"
-               + "}"
-             : "items.sort(function(a,b){ return a.y - b.y; });"
-               + "var start = items[0].y;"
-               + "var end = items[items.length - 1].y + items[items.length - 1].h;"
-               + "var total = 0;"
-               + "for (i = 0; i < items.length; i++) { total += items[i].h; }"
-               + "var gap = (end - start - total) / (items.length - 1);"
-               + "var pos = start;"
-               + "for (i = 0; i < items.length; i++) {"
-               + "  if (items[i].s.SetPosition) { items[i].s.SetPosition(items[i].x, Math.round(pos)); }"
-               + "  pos += items[i].h + gap;"
-               + "}");
+  function buildDistributeScript(direction, targetMode) {
+    var mode = targetMode === "slide" ? "slide" : "selection";
+    var alignTarget = mode === "slide" ? "Asc.c_oAscObjectsAlignType.Slide" : "Asc.c_oAscObjectsAlignType.Selected";
+    var methodName = direction === "h" ? "DistributeHorizontally" : "DistributeVertically";
+
+    return "var pres = Api.GetPresentation ? Api.GetPresentation() : null;"
+      + "if (!pres) { return; }"
+      + "var target = " + alignTarget + ";"
+      + "if (pres && pres." + methodName + ") { pres." + methodName + "(target); return; }"
+      + "if (pres && pres.DistributeHorizontally && pres.DistributeVertically) {" + (direction === "h" ? "pres.DistributeHorizontally(target);" : "pres.DistributeVertically(target);") + "}";
   }
 
   // ─── OnlyOffice Plugin lifecycle ───────────────────────────────────────────
@@ -651,8 +1116,9 @@
     btn.addEventListener("click", function () {
       var alignKey = btn.getAttribute("data-align");
       var alignVal = ALIGN_MAP[alignKey];
+      var alignTarget = getAlignTargetValue();
       if (alignVal) {
-        var script = buildAlignScript(alignVal);
+        var script = buildAlignScript(alignVal, alignTarget);
         executeCommandAndRefresh(script);
       }
     });
@@ -662,7 +1128,8 @@
   document.querySelectorAll("[data-distribute]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       var dir    = btn.getAttribute("data-distribute");
-      var script = buildDistributeScript(dir);
+      var alignTarget = getAlignTargetValue();
+      var script = buildDistributeScript(dir, alignTarget);
       executeCommandAndRefresh(script);
     });
   });
