@@ -257,6 +257,65 @@
     };
   }
 
+  function isLineObject(object, typeName) {
+    var fallbackName = String(typeName || "");
+    if (/line|connector|curve|polyline|path/.test(fallbackName.toLowerCase())) {
+      return true;
+    }
+
+    return hasAnyMethod(object, [
+      "GetStartX", "GetStartY", "GetEndX", "GetEndY",
+      "GetPathW", "GetPathH",
+      "GetXfrmOffX", "GetXfrmOffY", "GetXfrmExtX", "GetXfrmExtY"
+    ]);
+  }
+
+  function getLineMetrics(object, boundsValue) {
+    var bounds = getBoundsMetrics(boundsValue || {});
+    var startX = getMethodNumericProperty(object, ["GetStartX", "GetX1"], null);
+    var startY = getMethodNumericProperty(object, ["GetStartY", "GetY1"], null);
+    var endX = getMethodNumericProperty(object, ["GetEndX", "GetX2"], null);
+    var endY = getMethodNumericProperty(object, ["GetEndY", "GetY2"], null);
+
+    var x = null;
+    var y = null;
+    var w = null;
+    var h = null;
+
+    if (startX !== null && endX !== null) {
+      x = Math.min(startX, endX);
+      w = Math.abs(endX - startX);
+    } else if (startX !== null) {
+      x = startX;
+    } else {
+      x = bounds.x;
+    }
+
+    if (startY !== null && endY !== null) {
+      y = Math.min(startY, endY);
+      h = Math.abs(endY - startY);
+    } else if (startY !== null) {
+      y = startY;
+    } else {
+      y = bounds.y;
+    }
+
+    if (w === null) {
+      w = bounds.w;
+    }
+
+    if (h === null) {
+      h = bounds.h;
+    }
+
+    return {
+      x: x,
+      y: y,
+      w: w,
+      h: h
+    };
+  }
+
   function getNestedNumericProperty(object, paths) {
     var i;
     for (i = 0; i < paths.length; i++) {
@@ -306,7 +365,7 @@
       typeName = String(findNestedPropertyValue(object, ["Type", "type", "ObjectType", "objectType", "ClassName", "className"]) || "");
     }
 
-    var isLineLike = /line|connector|curve|polyline|path/.test(typeName.toLowerCase());
+    var isLineLike = isLineObject(object, typeName);
 
     if (object && typeof object.GetBounds === "function") {
       try {
@@ -332,7 +391,9 @@
     }
 
     if (isLineLike && boundsValue) {
-      boundsMetrics = getBoundsMetrics(boundsValue);
+      boundsMetrics = getLineMetrics(object, boundsValue);
+    } else if (isLineLike && (x === null || y === null || width === null || height === null)) {
+      boundsMetrics = getLineMetrics(object, boundsValue || {});
     }
 
     if (width === null) {
@@ -661,6 +722,65 @@
         };
       }
 
+      function isLineObjectLocal(object, typeName) {
+        var fallbackName = String(typeName || "");
+        if (/line|connector|curve|polyline|path/.test(fallbackName.toLowerCase())) {
+          return true;
+        }
+
+        return hasAnyMethodLocal(object, [
+          "GetStartX", "GetStartY", "GetEndX", "GetEndY",
+          "GetPathW", "GetPathH",
+          "GetXfrmOffX", "GetXfrmOffY", "GetXfrmExtX", "GetXfrmExtY"
+        ]);
+      }
+
+      function getLineMetricsLocal(object, boundsValue) {
+        var bounds = getBoundsMetricsLocal(boundsValue || {});
+        var startX = getMethodNumericPropertyLocal(object, ["GetStartX", "GetX1"], null);
+        var startY = getMethodNumericPropertyLocal(object, ["GetStartY", "GetY1"], null);
+        var endX = getMethodNumericPropertyLocal(object, ["GetEndX", "GetX2"], null);
+        var endY = getMethodNumericPropertyLocal(object, ["GetEndY", "GetY2"], null);
+
+        var x = null;
+        var y = null;
+        var w = null;
+        var h = null;
+
+        if (startX !== null && endX !== null) {
+          x = Math.min(startX, endX);
+          w = Math.abs(endX - startX);
+        } else if (startX !== null) {
+          x = startX;
+        } else {
+          x = bounds.x;
+        }
+
+        if (startY !== null && endY !== null) {
+          y = Math.min(startY, endY);
+          h = Math.abs(endY - startY);
+        } else if (startY !== null) {
+          y = startY;
+        } else {
+          y = bounds.y;
+        }
+
+        if (w === null) {
+          w = bounds.w;
+        }
+
+        if (h === null) {
+          h = bounds.h;
+        }
+
+        return {
+          x: x,
+          y: y,
+          w: w,
+          h: h
+        };
+      }
+
       function getSelectionObjectsLocal(selection) {
         if (!selection) {
           return [];
@@ -768,7 +888,7 @@ var x = getMethodNumericPropertyLocal(drawing, ["GetPosX", "GetX", "GetLeft", "G
           }
         }
 
-        var isLineLike = /line|connector|curve|polyline|path/.test(typeName.toLowerCase());
+        var isLineLike = isLineObjectLocal(drawing, typeName);
 
         if (drawing.GetBounds) {
           try {
@@ -779,11 +899,17 @@ var x = getMethodNumericPropertyLocal(drawing, ["GetPosX", "GetX", "GetLeft", "G
         }
 
         if (bounds && (isLineLike || !hasAnyMethodLocal(drawing, ["GetPosX", "GetX", "GetLeft", "GetPosY", "GetY", "GetTop", "GetWidth", "GetW", "GetHeight", "GetH"]) || (x === null && y === null && w === null && h === null))) {
-          var boundsMetrics = getBoundsMetricsLocal(bounds);
+          var boundsMetrics = isLineLike ? getLineMetricsLocal(drawing, bounds) : getBoundsMetricsLocal(bounds);
           x = x !== null ? x : boundsMetrics.x;
           y = y !== null ? y : boundsMetrics.y;
           w = w !== null ? w : boundsMetrics.w;
           h = h !== null ? h : boundsMetrics.h;
+        } else if (isLineLike && (x === null || y === null || w === null || h === null)) {
+          var lineFallbackMetrics = getLineMetricsLocal(drawing, bounds || {});
+          x = x !== null ? x : lineFallbackMetrics.x;
+          y = y !== null ? y : lineFallbackMetrics.y;
+          w = w !== null ? w : lineFallbackMetrics.w;
+          h = h !== null ? h : lineFallbackMetrics.h;
         }
 
         result.push({
