@@ -1,9 +1,9 @@
 {
   "name": "Layout Panel",
   "offered": "Axel Kirbach, digital-systems.org",
-  "guid": "asc.{C7A12356-8D4E-4B2F-9F3A-6E5D7C8B9A1F}",
+  "guid": "asc.{C38E05DF-DD96-4508-94C2-ACA1DA943B1E}",
   "baseUrl": "",
-  "version": "1.0",
+  "version": "1.0.0",
   "minVersion": "7.0.0",
   "variations": [
     {
