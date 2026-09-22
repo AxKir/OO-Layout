@@ -263,10 +263,22 @@
       return true;
     }
 
-    return hasAnyMethod(object, [
+    if (!object) {
+      return false;
+    }
+
+    var hasLineEndpoints = hasAnyMethod(object, [
       "GetStartX", "GetStartY", "GetEndX", "GetEndY",
-      "GetPathW", "GetPathH",
-      "GetXfrmOffX", "GetXfrmOffY", "GetXfrmExtX", "GetXfrmExtY"
+      "GetX1", "GetY1", "GetX2", "GetY2"
+    ]);
+
+    if (hasLineEndpoints) {
+      return true;
+    }
+
+    return hasAnyMethod(object, ["GetPathW", "GetPathH"]) && hasAnyMethod(object, [
+      "GetStartX", "GetStartY", "GetEndX", "GetEndY",
+      "GetX1", "GetY1", "GetX2", "GetY2"
     ]);
   }
 
@@ -467,6 +479,33 @@
     return m.w !== null || m.h !== null || m.x !== null || m.y !== null || m.rot !== null;
   }
 
+  function hasLineLikeSelection(objects) {
+    if (!objects || !objects.length) {
+      return false;
+    }
+
+    return objects.some(function (object) {
+      if (!object) {
+        return false;
+      }
+
+      var typeName = "";
+      if (object && (typeof object.GetClassType === "function" || typeof object.GetType === "function")) {
+        try {
+          typeName = String(typeof object.GetClassType === "function" ? object.GetClassType() : object.GetType());
+        } catch (error) {
+          typeName = "";
+        }
+      }
+
+      if (!typeName) {
+        typeName = String(findNestedPropertyValue(object, ["Type", "type", "ObjectType", "objectType", "ClassName", "className"]) || "");
+      }
+
+      return isLineObject(object, typeName);
+    });
+  }
+
   function setSectionDisabled(section, disabled) {
     if (!section) {
       return;
@@ -497,6 +536,7 @@
     var hasSelection = objects && objects.length > 0;
     var isSingleSelection = objects && objects.length === 1;
     var isMultiSelection = objects && objects.length > 1;
+    var hasLineSelection = hasLineLikeSelection(objects);
 
     setSelectionStatus(objects ? objects.length : 0);
 
@@ -536,6 +576,14 @@
     setSectionDisabled(elSectionRotation, !hasSelection);
     setSectionDisabled(elSectionAlign, !hasSelection);
     setSectionDisabled(elSectionDistrib, !isMultiSelection);
+
+    document.querySelectorAll("[data-align]").forEach(function (btn) {
+      btn.disabled = !hasSelection || hasLineSelection;
+    });
+
+    document.querySelectorAll("[data-distribute]").forEach(function (btn) {
+      btn.disabled = !isMultiSelection || hasLineSelection;
+    });
 
     if (elLockAspect) {
       elLockAspect.disabled = !isSingleSelection;
@@ -732,10 +780,22 @@
           return true;
         }
 
-        return hasAnyMethodLocal(object, [
+        if (!object) {
+          return false;
+        }
+
+        var hasLineEndpoints = hasAnyMethodLocal(object, [
           "GetStartX", "GetStartY", "GetEndX", "GetEndY",
-          "GetPathW", "GetPathH",
-          "GetXfrmOffX", "GetXfrmOffY", "GetXfrmExtX", "GetXfrmExtY"
+          "GetX1", "GetY1", "GetX2", "GetY2"
+        ]);
+
+        if (hasLineEndpoints) {
+          return true;
+        }
+
+        return hasAnyMethodLocal(object, ["GetPathW", "GetPathH"]) && hasAnyMethodLocal(object, [
+          "GetStartX", "GetStartY", "GetEndX", "GetEndY",
+          "GetX1", "GetY1", "GetX2", "GetY2"
         ]);
       }
 
